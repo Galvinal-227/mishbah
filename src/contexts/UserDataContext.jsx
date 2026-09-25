@@ -47,30 +47,44 @@ export function UserDataProvider({ children }) {
         setLoading(true);
 
         if (isGuest) {
-          // Guest: ambil dari localStorage
           if (!mounted) return;
           setBookmarks(getGuestBookmarks());
           setLastRead(getGuestLastRead());
           return;
         }
 
-        // Login: migrasi guest dulu (sekali per session uid)
+        // Login: migrasi guest dulu (sekali per session)
         if (!migrated) {
-          const result = await migrateGuestDataToFirestore(uid);
-          if (mounted && (result.bookmarks > 0 || result.lastRead)) {
-            setMigrated(true);
+          try {
+            const result = await migrateGuestDataToFirestore(uid);
+            if (mounted && (result.bookmarks > 0 || result.lastRead)) {
+              setMigrated(true);
+            }
+          } catch (err) {
+            console.warn('[UserData] Migrasi gagal (mungkin offline):', err);
           }
         }
 
-        // Lalu load dari Firestore
-        const [bm, lr] = await Promise.all([
-          getBookmarks(uid),
-          getFirestoreLastRead(uid),
-        ]);
-
-        if (!mounted) return;
-        setBookmarks(bm ?? []);
-        setLastRead(lr ?? null);
+        // Ambil data dari Firestore dengan fallback offline
+        try {
+          const [bm, lr] = await Promise.all([
+            getBookmarks(uid),
+            getFirestoreLastRead(uid),
+          ]);
+          if (!mounted) return;
+          setBookmarks(bm ?? []);
+          setLastRead(lr ?? null);
+        } catch (err) {
+          console.warn(
+            '[UserData] Firestore offline, pakai data lokal:',
+            err?.message
+          );
+          if (mounted) {
+            // Fallback ke localStorage supaya UI tetap bisa tampil
+            setBookmarks(getGuestBookmarks());
+            setLastRead(getGuestLastRead());
+          }
+        }
       } catch (err) {
         console.error('[UserData] load error', err);
       } finally {
@@ -97,7 +111,6 @@ export function UserDataProvider({ children }) {
       );
 
       if (isGuest) {
-        // Guest: update localStorage
         const next = exists
           ? bookmarks.filter(
               (b) =>
@@ -129,7 +142,6 @@ export function UserDataProvider({ children }) {
         return { added: !exists };
       }
 
-      // Login: update Firestore + state lokal
       if (exists) {
         setBookmarks((prev) =>
           prev.filter(
@@ -141,13 +153,8 @@ export function UserDataProvider({ children }) {
           )
         );
         try {
-          await removeBookmark(
-            uid,
-            payload.surahNumber,
-            payload.ayahNumber
-          );
+          await removeBookmark(uid, payload.surahNumber, payload.ayahNumber);
         } catch (err) {
-          // rollback
           setBookmarks((prev) => [...prev, { ...payload }]);
           throw err;
         }
@@ -165,7 +172,6 @@ export function UserDataProvider({ children }) {
         try {
           await addBookmark(uid, payload);
         } catch (err) {
-          // rollback
           setBookmarks((prev) =>
             prev.filter(
               (b) =>
@@ -234,12 +240,16 @@ export function UserDataProvider({ children }) {
           setBookmarks(getGuestBookmarks());
           setLastRead(getGuestLastRead());
         } else if (uid) {
-          const [bm, lr] = await Promise.all([
-            getBookmarks(uid),
-            getFirestoreLastRead(uid),
-          ]);
-          setBookmarks(bm ?? []);
-          setLastRead(lr ?? null);
+          try {
+            const [bm, lr] = await Promise.all([
+              getBookmarks(uid),
+              getFirestoreLastRead(uid),
+            ]);
+            setBookmarks(bm ?? []);
+            setLastRead(lr ?? null);
+          } catch (err) {
+            console.warn('[UserData] refresh gagal:', err?.message);
+          }
         }
       },
     }),
