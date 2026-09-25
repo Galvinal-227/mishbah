@@ -26,9 +26,6 @@ export function LocationProvider({ children }) {
   const [detecting, setDetecting] = useState(false);
   const [error, setError] = useState(null);
 
-  /* =========================================================
-     Load provinsi sekali saat mount
-     ========================================================= */
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -48,9 +45,6 @@ export function LocationProvider({ children }) {
     };
   }, []);
 
-  /* =========================================================
-     Load kabkota saat location.provinsi berubah
-     ========================================================= */
   useEffect(() => {
     if (!location?.provinsi) {
       setKabkotaList([]);
@@ -73,9 +67,6 @@ export function LocationProvider({ children }) {
     };
   }, [location?.provinsi]);
 
-  /* =========================================================
-     Set manual
-     ========================================================= */
   const setManual = useCallback(
     (provinsi, kabkota) => {
       setLocation({
@@ -91,35 +82,35 @@ export function LocationProvider({ children }) {
   const clear = useCallback(() => setLocation(null), [setLocation]);
 
   /* =========================================================
-     Deteksi otomatis dengan cek koneksi + logging detail
+     Deteksi otomatis — robust
      ========================================================= */
   const detectAuto = useCallback(async () => {
     setDetecting(true);
     setError(null);
 
     try {
-      // Cek koneksi
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-        throw new Error('Anda sedang offline. Periksa koneksi internet Anda.');
+        throw new Error('Anda sedang offline. Periksa koneksi internet.');
       }
 
-      // 1. Ambil posisi
-      console.log('[Detect] Meminta izin lokasi...');
+      // 1. Posisi
+      console.log('[Detect] 1) Meminta izin lokasi...');
       const { lat, lng } = await getCurrentPosition();
       console.log('[Detect] Koordinat:', lat, lng);
 
       // 2. Reverse geocode
-      console.log('[Detect] Reverse geocoding...');
+      console.log('[Detect] 2) Reverse geocoding...');
       const geo = await reverseGeocode(lat, lng);
       console.log('[Detect] Hasil geocode:', geo);
 
-      // 3. Kandidat provinsi
+      // 3. Kumpulkan kandidat provinsi (dari berbagai field)
       const candidatesProv = [
-        geo.principalSubdivision,
-        geo.principalSubdivisionCode,
-        geo.localityInfo?.administrative?.[1]?.name,
+        geo.state, // Nominatim
+        geo.principalSubdivision, // BigDataCloud
+        geo.principalSubdivisionCode, // BigDataCloud
       ].filter(Boolean);
-      console.log('[Detect] Kandidat provinsi:', candidatesProv);
+
+      console.log('[Detect] 3) Kandidat provinsi:', candidatesProv);
 
       // 4. Match provinsi
       const normalizeProv = (s) =>
@@ -144,8 +135,8 @@ export function LocationProvider({ children }) {
 
       // 4b. Normalized
       if (!matchedProvinsi) {
-        const normalizedCands = candidatesProv.map(normalizeProv);
-        for (const cand of normalizedCands) {
+        const normCands = candidatesProv.map(normalizeProv);
+        for (const cand of normCands) {
           if (!cand) continue;
           const hit = provinsiList.find((p) => normalizeProv(p) === cand);
           if (hit) {
@@ -155,10 +146,10 @@ export function LocationProvider({ children }) {
         }
       }
 
-      // 4c. Partial (kata pertama)
+      // 4c. Partial
       if (!matchedProvinsi) {
-        const normalizedCands = candidatesProv.map(normalizeProv);
-        for (const cand of normalizedCands) {
+        const normCands = candidatesProv.map(normalizeProv);
+        for (const cand of normCands) {
           if (!cand) continue;
           const firstWord = cand.split(' ')[0];
           if (firstWord.length < 4) continue;
@@ -174,46 +165,53 @@ export function LocationProvider({ children }) {
 
       if (!matchedProvinsi) {
         throw new Error(
-          `Provinsi tidak dikenali dari lokasi Anda (${
-            candidatesProv[0] || 'tidak diketahui'
-          }). Pilih manual.`
+          `Provinsi tidak dikenali: ${candidatesProv.join(', ')}. Pilih manual.`
         );
       }
 
-      console.log('[Detect] Provinsi matched:', matchedProvinsi);
+      console.log('[Detect] 4) Provinsi matched:', matchedProvinsi);
 
-      // 5. Ambil kabkota untuk provinsi
+      // 5. Ambil kabkota
+      console.log('[Detect] 5) Fetch kabkota untuk:', matchedProvinsi);
       const kabs = await getKabkotaList(matchedProvinsi);
       console.log('[Detect] Total kabkota:', kabs.length);
 
       if (!kabs || kabs.length === 0) {
         throw new Error(
-          `Data kabupaten/kota untuk ${matchedProvinsi} kosong. Coba lagi atau pilih manual.`
+          `Data kabupaten/kota untuk ${matchedProvinsi} kosong. Coba lagi.`
         );
       }
 
-      // 6. Kandidat kabupaten
+      // 6. Kandidat kabupaten — KUMPULKAN SEMUA field
       const candidatesKab = [
+        // Nominatim
         geo.city,
+        geo.town,
+        geo.county,
+        geo.municipality,
+        geo.suburb,
+        geo.village,
+        // BigDataCloud
         geo.locality,
         geo.localityInfo?.administrative?.[2]?.name,
         geo.localityInfo?.administrative?.[3]?.name,
         geo.localityInfo?.administrative?.[4]?.name,
       ].filter(Boolean);
-      console.log('[Detect] Kandidat kabkota:', candidatesKab);
 
-      // 7. Match kabupaten
+      console.log('[Detect] 6) Kandidat kabkota:', candidatesKab);
+
+      // 7. Match kabkota
       const matchedKab = matchKabkota(kabs, candidatesKab);
 
       if (!matchedKab) {
         throw new Error(
-          `Kabupaten/kota tidak dikenali (${
-            candidatesKab[0] || 'tidak diketahui'
-          }). Silakan pilih manual.`
+          `Kabupaten/kota tidak dikenali: ${candidatesKab.join(
+            ', '
+          )}. Silakan pilih manual.`
         );
       }
 
-      console.log('[Detect] Kabkota matched:', matchedKab);
+      console.log('[Detect] 7) Kabkota matched:', matchedKab);
 
       const result = {
         provinsi: matchedProvinsi,
@@ -232,9 +230,6 @@ export function LocationProvider({ children }) {
     }
   }, [provinsiList, setLocation]);
 
-  /* =========================================================
-     Context value
-     ========================================================= */
   const value = useMemo(
     () => ({
       location,
