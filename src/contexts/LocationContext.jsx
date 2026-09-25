@@ -26,11 +26,15 @@ export function LocationProvider({ children }) {
   const [detecting, setDetecting] = useState(false);
   const [error, setError] = useState(null);
 
+  /* =========================================================
+     Load provinsi sekali saat mount
+     ========================================================= */
   useEffect(() => {
     let mounted = true;
     (async () => {
       try {
         setLoadingProvinsi(true);
+        setError(null);
         const list = await getProvinsiList();
         if (mounted) setProvinsiList(list);
       } catch (err) {
@@ -44,6 +48,9 @@ export function LocationProvider({ children }) {
     };
   }, []);
 
+  /* =========================================================
+     Load kabkota saat location.provinsi berubah
+     ========================================================= */
   useEffect(() => {
     if (!location?.provinsi) {
       setKabkotaList([]);
@@ -66,6 +73,9 @@ export function LocationProvider({ children }) {
     };
   }, [location?.provinsi]);
 
+  /* =========================================================
+     Set manual
+     ========================================================= */
   const setManual = useCallback(
     (provinsi, kabkota) => {
       setLocation({
@@ -80,14 +90,19 @@ export function LocationProvider({ children }) {
 
   const clear = useCallback(() => setLocation(null), [setLocation]);
 
-  /**
-   * Deteksi otomatis dengan matching yang lebih pintar.
-   */
+  /* =========================================================
+     Deteksi otomatis dengan cek koneksi + logging detail
+     ========================================================= */
   const detectAuto = useCallback(async () => {
     setDetecting(true);
     setError(null);
 
     try {
+      // Cek koneksi
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        throw new Error('Anda sedang offline. Periksa koneksi internet Anda.');
+      }
+
       // 1. Ambil posisi
       console.log('[Detect] Meminta izin lokasi...');
       const { lat, lng } = await getCurrentPosition();
@@ -98,19 +113,25 @@ export function LocationProvider({ children }) {
       const geo = await reverseGeocode(lat, lng);
       console.log('[Detect] Hasil geocode:', geo);
 
-      // 3. Kumpulkan kandidat provinsi
+      // 3. Kandidat provinsi
       const candidatesProv = [
         geo.principalSubdivision,
         geo.principalSubdivisionCode,
         geo.localityInfo?.administrative?.[1]?.name,
       ].filter(Boolean);
-
       console.log('[Detect] Kandidat provinsi:', candidatesProv);
 
-      // 4. Match provinsi (exact → partial)
+      // 4. Match provinsi
+      const normalizeProv = (s) =>
+        String(s)
+          .toLowerCase()
+          .replace(/^(prov\.?|provinsi|dki|di)\s+/i, '')
+          .replace(/[^a-z\s]/g, '')
+          .trim();
+
       let matchedProvinsi = null;
 
-      // 4a. Exact match dulu
+      // 4a. Exact
       for (const cand of candidatesProv) {
         const hit = provinsiList.find(
           (p) => p.toLowerCase() === String(cand).toLowerCase()
@@ -121,58 +142,57 @@ export function LocationProvider({ children }) {
         }
       }
 
-      // 4b. Normalized match (hilangkan "Prov.", "DKI", dll)
+      // 4b. Normalized
       if (!matchedProvinsi) {
-        const normalizeProv = (s) =>
-          String(s)
-            .toLowerCase()
-            .replace(/^(prov\.?|provinsi|dki|di)\s+/i, '')
-            .replace(/[^a-z\s]/g, '')
-            .trim();
-
         const normalizedCands = candidatesProv.map(normalizeProv);
-
         for (const cand of normalizedCands) {
           if (!cand) continue;
-          const hit = provinsiList.find(
-            (p) => normalizeProv(p) === cand
+          const hit = provinsiList.find((p) => normalizeProv(p) === cand);
+          if (hit) {
+            matchedProvinsi = hit;
+            break;
+          }
+        }
+      }
+
+      // 4c. Partial (kata pertama)
+      if (!matchedProvinsi) {
+        const normalizedCands = candidatesProv.map(normalizeProv);
+        for (const cand of normalizedCands) {
+          if (!cand) continue;
+          const firstWord = cand.split(' ')[0];
+          if (firstWord.length < 4) continue;
+          const hit = provinsiList.find((p) =>
+            normalizeProv(p).includes(firstWord)
           );
           if (hit) {
             matchedProvinsi = hit;
             break;
           }
         }
-
-        // 4c. Partial match (kata pertama)
-        if (!matchedProvinsi) {
-          for (const cand of normalizedCands) {
-            if (!cand) continue;
-            const firstWord = cand.split(' ')[0];
-            if (firstWord.length < 4) continue;
-            const hit = provinsiList.find((p) =>
-              normalizeProv(p).includes(firstWord)
-            );
-            if (hit) {
-              matchedProvinsi = hit;
-              break;
-            }
-          }
-        }
       }
 
       if (!matchedProvinsi) {
         throw new Error(
-          `Provinsi tidak dikenali dari lokasi Anda (${candidatesProv[0] || 'tidak diketahui'}). Pilih manual.`
+          `Provinsi tidak dikenali dari lokasi Anda (${
+            candidatesProv[0] || 'tidak diketahui'
+          }). Pilih manual.`
         );
       }
 
       console.log('[Detect] Provinsi matched:', matchedProvinsi);
 
-      // 5. Ambil kabupaten/kota untuk provinsi ini
+      // 5. Ambil kabkota untuk provinsi
       const kabs = await getKabkotaList(matchedProvinsi);
       console.log('[Detect] Total kabkota:', kabs.length);
 
-      // 6. Kumpulkan kandidat kabupaten
+      if (!kabs || kabs.length === 0) {
+        throw new Error(
+          `Data kabupaten/kota untuk ${matchedProvinsi} kosong. Coba lagi atau pilih manual.`
+        );
+      }
+
+      // 6. Kandidat kabupaten
       const candidatesKab = [
         geo.city,
         geo.locality,
@@ -180,7 +200,6 @@ export function LocationProvider({ children }) {
         geo.localityInfo?.administrative?.[3]?.name,
         geo.localityInfo?.administrative?.[4]?.name,
       ].filter(Boolean);
-
       console.log('[Detect] Kandidat kabkota:', candidatesKab);
 
       // 7. Match kabupaten
@@ -190,7 +209,7 @@ export function LocationProvider({ children }) {
         throw new Error(
           `Kabupaten/kota tidak dikenali (${
             candidatesKab[0] || 'tidak diketahui'
-          }). Pilih manual.`
+          }). Silakan pilih manual.`
         );
       }
 
@@ -213,6 +232,9 @@ export function LocationProvider({ children }) {
     }
   }, [provinsiList, setLocation]);
 
+  /* =========================================================
+     Context value
+     ========================================================= */
   const value = useMemo(
     () => ({
       location,
