@@ -25,7 +25,6 @@ export default function LocationPicker({ open, onClose }) {
   const [loadingKabkota, setLoadingKabkota] = useState(false);
   const [fetchError, setFetchError] = useState(null);
 
-  // Reset state saat modal dibuka
   useEffect(() => {
     if (open) {
       setProvinsi(location?.provinsi ?? '');
@@ -34,26 +33,19 @@ export default function LocationPicker({ open, onClose }) {
     }
   }, [open, location]);
 
-  // Fetch kabkota setiap provinsi berubah
   useEffect(() => {
     if (!provinsi) {
       setKabkotaList([]);
       return;
     }
-
     let mounted = true;
     (async () => {
       try {
         setLoadingKabkota(true);
         setFetchError(null);
-        console.log('[LocationPicker] Fetch kabkota untuk:', provinsi);
-
         const list = await getKabkotaList(provinsi);
-        console.log('[LocationPicker] Dapat', list.length, 'kabkota');
-
         if (mounted) setKabkotaList(list);
       } catch (err) {
-        console.error('[LocationPicker] Gagal fetch kabkota:', err);
         if (mounted) {
           setFetchError(err.message || 'Gagal memuat kabupaten/kota');
           setKabkotaList([]);
@@ -62,7 +54,6 @@ export default function LocationPicker({ open, onClose }) {
         if (mounted) setLoadingKabkota(false);
       }
     })();
-
     return () => {
       mounted = false;
     };
@@ -86,7 +77,7 @@ export default function LocationPicker({ open, onClose }) {
       toast.success(`Lokasi terdeteksi: ${res.kabkota}`);
       onClose?.();
     } else {
-      toast.warning('Deteksi gagal. Silakan pilih provinsi & kabupaten manual.');
+      toast.warning('Deteksi gagal. Silakan pilih manual.');
     }
   };
 
