@@ -8,11 +8,12 @@ import {
 } from 'react';
 import useLocalStorage from '../hooks/useLocalStorage';
 import { STORAGE_KEYS } from '../config/constants';
+import { getProvinsiList, getKabkotaList } from '../services/prayerService';
 import {
-  getProvinsiList,
-  getKabkotaList,
-} from '../services/prayerService';
-import { getCurrentPosition, reverseGeocode, matchKabkota } from '../services/locationService';
+  getCurrentPosition,
+  reverseGeocode,
+  matchKabkota,
+} from '../services/locationService';
 
 const LocationContext = createContext(null);
 
@@ -25,7 +26,6 @@ export function LocationProvider({ children }) {
   const [detecting, setDetecting] = useState(false);
   const [error, setError] = useState(null);
 
-  // Load provinsi sekali
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -44,7 +44,6 @@ export function LocationProvider({ children }) {
     };
   }, []);
 
-  // Load kabkota saat provinsi berubah
   useEffect(() => {
     if (!location?.provinsi) {
       setKabkotaList([]);
@@ -69,7 +68,12 @@ export function LocationProvider({ children }) {
 
   const setManual = useCallback(
     (provinsi, kabkota) => {
-      setLocation({ provinsi, kabkota, source: 'manual', updatedAt: Date.now() });
+      setLocation({
+        provinsi,
+        kabkota,
+        source: 'manual',
+        updatedAt: Date.now(),
+      });
     },
     [setLocation]
   );
@@ -77,49 +81,120 @@ export function LocationProvider({ children }) {
   const clear = useCallback(() => setLocation(null), [setLocation]);
 
   /**
-   * Deteksi otomatis: geolocation → reverse geocode → match kabkota.
-   * Return { provinsi, kabkota } kalau berhasil, null kalau gagal.
+   * Deteksi otomatis dengan matching yang lebih pintar.
    */
   const detectAuto = useCallback(async () => {
     setDetecting(true);
     setError(null);
-    try {
-      const { lat, lng } = await getCurrentPosition();
-      const geo = await reverseGeocode(lat, lng);
 
-      // Cari provinsi dari principalSubdivision
-      const candidatesProv = [geo.principalSubdivision, geo.principalSubdivisionCode];
+    try {
+      // 1. Ambil posisi
+      console.log('[Detect] Meminta izin lokasi...');
+      const { lat, lng } = await getCurrentPosition();
+      console.log('[Detect] Koordinat:', lat, lng);
+
+      // 2. Reverse geocode
+      console.log('[Detect] Reverse geocoding...');
+      const geo = await reverseGeocode(lat, lng);
+      console.log('[Detect] Hasil geocode:', geo);
+
+      // 3. Kumpulkan kandidat provinsi
+      const candidatesProv = [
+        geo.principalSubdivision,
+        geo.principalSubdivisionCode,
+        geo.localityInfo?.administrative?.[1]?.name,
+      ].filter(Boolean);
+
+      console.log('[Detect] Kandidat provinsi:', candidatesProv);
+
+      // 4. Match provinsi (exact → partial)
       let matchedProvinsi = null;
-      if (provinsiList?.length) {
-        matchedProvinsi = provinsiList.find((p) =>
-          candidatesProv.some(
-            (c) =>
-              c &&
-              p.toLowerCase().replace(/[^a-z]/g, '') ===
-                String(c).toLowerCase().replace(/[^a-z]/g, '')
-          )
+
+      // 4a. Exact match dulu
+      for (const cand of candidatesProv) {
+        const hit = provinsiList.find(
+          (p) => p.toLowerCase() === String(cand).toLowerCase()
         );
-        if (!matchedProvinsi) {
-          matchedProvinsi = provinsiList.find((p) =>
-            candidatesProv.some(
-              (c) => c && p.toLowerCase().includes(String(c).toLowerCase().split(' ')[0])
-            )
-          );
+        if (hit) {
+          matchedProvinsi = hit;
+          break;
         }
       }
+
+      // 4b. Normalized match (hilangkan "Prov.", "DKI", dll)
       if (!matchedProvinsi) {
-        throw new Error('Provinsi tidak dikenali');
+        const normalizeProv = (s) =>
+          String(s)
+            .toLowerCase()
+            .replace(/^(prov\.?|provinsi|dki|di)\s+/i, '')
+            .replace(/[^a-z\s]/g, '')
+            .trim();
+
+        const normalizedCands = candidatesProv.map(normalizeProv);
+
+        for (const cand of normalizedCands) {
+          if (!cand) continue;
+          const hit = provinsiList.find(
+            (p) => normalizeProv(p) === cand
+          );
+          if (hit) {
+            matchedProvinsi = hit;
+            break;
+          }
+        }
+
+        // 4c. Partial match (kata pertama)
+        if (!matchedProvinsi) {
+          for (const cand of normalizedCands) {
+            if (!cand) continue;
+            const firstWord = cand.split(' ')[0];
+            if (firstWord.length < 4) continue;
+            const hit = provinsiList.find((p) =>
+              normalizeProv(p).includes(firstWord)
+            );
+            if (hit) {
+              matchedProvinsi = hit;
+              break;
+            }
+          }
+        }
       }
 
+      if (!matchedProvinsi) {
+        throw new Error(
+          `Provinsi tidak dikenali dari lokasi Anda (${candidatesProv[0] || 'tidak diketahui'}). Pilih manual.`
+        );
+      }
+
+      console.log('[Detect] Provinsi matched:', matchedProvinsi);
+
+      // 5. Ambil kabupaten/kota untuk provinsi ini
       const kabs = await getKabkotaList(matchedProvinsi);
-      const matchedKab = matchKabkota(kabs, [
+      console.log('[Detect] Total kabkota:', kabs.length);
+
+      // 6. Kumpulkan kandidat kabupaten
+      const candidatesKab = [
         geo.city,
         geo.locality,
         geo.localityInfo?.administrative?.[2]?.name,
         geo.localityInfo?.administrative?.[3]?.name,
-      ]);
+        geo.localityInfo?.administrative?.[4]?.name,
+      ].filter(Boolean);
 
-      if (!matchedKab) throw new Error('Kabupaten/kota tidak dikenali');
+      console.log('[Detect] Kandidat kabkota:', candidatesKab);
+
+      // 7. Match kabupaten
+      const matchedKab = matchKabkota(kabs, candidatesKab);
+
+      if (!matchedKab) {
+        throw new Error(
+          `Kabupaten/kota tidak dikenali (${
+            candidatesKab[0] || 'tidak diketahui'
+          }). Pilih manual.`
+        );
+      }
+
+      console.log('[Detect] Kabkota matched:', matchedKab);
 
       const result = {
         provinsi: matchedProvinsi,
@@ -130,6 +205,7 @@ export function LocationProvider({ children }) {
       setLocation(result);
       return result;
     } catch (err) {
+      console.error('[Detect] Gagal:', err);
       setError(err.message || 'Gagal mendeteksi lokasi');
       return null;
     } finally {
