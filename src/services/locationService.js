@@ -36,7 +36,7 @@ export function getCurrentPosition(options = {}) {
 
 /* =========================================================
    Cocokkan hasil reverse-geocode ke daftar kabkota dari API
-   Toleran: "Kota Bogor" ↔ "Bogor", "Kab. Bandung" ↔ "Bandung"
+   Dengan logging & matching 3-level
    ========================================================= */
 export function matchKabkota(kabkotaList, candidates = []) {
   if (!kabkotaList?.length || !candidates?.length) return null;
@@ -45,21 +45,55 @@ export function matchKabkota(kabkotaList, candidates = []) {
     String(s)
       .toLowerCase()
       .replace(/^(kota|kab\.?|kabupaten)\s+/i, '')
+      .replace(/\s+/g, ' ')
       .replace(/[^a-z0-9\s]/g, '')
       .trim();
 
-  const cands = candidates.filter(Boolean).map(normalize);
+  const cands = candidates
+    .filter(Boolean)
+    .map(normalize)
+    .filter((c) => c.length > 0);
+
+  console.log('[matchKabkota] Candidates:', cands);
+  console.log(
+    '[matchKabkota] Kabkota sample:',
+    kabkotaList.slice(0, 5).map(normalize)
+  );
 
   // 1) Exact match
   for (const cand of cands) {
     const hit = kabkotaList.find((k) => normalize(k) === cand);
-    if (hit) return hit;
+    if (hit) {
+      console.log('[matchKabkota] Exact match:', cand, '→', hit);
+      return hit;
+    }
   }
-  // 2) Partial match
+
+  // 2) Contains match (either way)
   for (const cand of cands) {
     if (cand.length < 3) continue;
-    const hit = kabkotaList.find((k) => normalize(k).includes(cand));
-    if (hit) return hit;
+    const hit = kabkotaList.find((k) => {
+      const nk = normalize(k);
+      return nk.includes(cand) || cand.includes(nk);
+    });
+    if (hit) {
+      console.log('[matchKabkota] Contains match:', cand, '→', hit);
+      return hit;
+    }
   }
+
+  // 3) Word-by-word match (kata ≥3 huruf)
+  for (const cand of cands) {
+    const words = cand.split(' ').filter((w) => w.length >= 3);
+    for (const word of words) {
+      const hit = kabkotaList.find((k) => normalize(k).includes(word));
+      if (hit) {
+        console.log('[matchKabkota] Word match:', word, '→', hit);
+        return hit;
+      }
+    }
+  }
+
+  console.log('[matchKabkota] Tidak ada yang match');
   return null;
 }
