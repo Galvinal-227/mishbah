@@ -4,29 +4,69 @@ import Modal from '../ui/Modal';
 import Button from '../ui/Button';
 import { useLocationCtx } from '../../contexts/LocationContext';
 import { useToast } from '../../contexts/ToastContext';
+import { getKabkotaList } from '../../services/prayerService';
 
 export default function LocationPicker({ open, onClose }) {
   const {
     location,
     provinsiList,
-    kabkotaList,
     loadingProvinsi,
-    loadingKabkota,
     detecting,
+    error: ctxError,
     setManual,
     detectAuto,
   } = useLocationCtx();
 
   const toast = useToast();
-  const [provinsi, setProvinsi] = useState(location?.provinsi ?? '');
-  const [kabkota, setKabkota] = useState(location?.kabkota ?? '');
 
+  const [provinsi, setProvinsi] = useState('');
+  const [kabkota, setKabkota] = useState('');
+  const [kabkotaList, setKabkotaList] = useState([]);
+  const [loadingKabkota, setLoadingKabkota] = useState(false);
+  const [fetchError, setFetchError] = useState(null);
+
+  // Reset state saat modal dibuka
   useEffect(() => {
     if (open) {
       setProvinsi(location?.provinsi ?? '');
       setKabkota(location?.kabkota ?? '');
+      setFetchError(null);
     }
   }, [open, location]);
+
+  // Fetch kabkota setiap provinsi berubah
+  useEffect(() => {
+    if (!provinsi) {
+      setKabkotaList([]);
+      return;
+    }
+
+    let mounted = true;
+    (async () => {
+      try {
+        setLoadingKabkota(true);
+        setFetchError(null);
+        console.log('[LocationPicker] Fetch kabkota untuk:', provinsi);
+
+        const list = await getKabkotaList(provinsi);
+        console.log('[LocationPicker] Dapat', list.length, 'kabkota');
+
+        if (mounted) setKabkotaList(list);
+      } catch (err) {
+        console.error('[LocationPicker] Gagal fetch kabkota:', err);
+        if (mounted) {
+          setFetchError(err.message || 'Gagal memuat kabupaten/kota');
+          setKabkotaList([]);
+        }
+      } finally {
+        if (mounted) setLoadingKabkota(false);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, [provinsi]);
 
   const handleSave = () => {
     if (!provinsi || !kabkota) {
@@ -44,8 +84,9 @@ export default function LocationPicker({ open, onClose }) {
       setProvinsi(res.provinsi);
       setKabkota(res.kabkota);
       toast.success(`Lokasi terdeteksi: ${res.kabkota}`);
+      onClose?.();
     } else {
-      toast.error('Gagal mendeteksi lokasi. Pilih manual saja.');
+      toast.warning('Deteksi gagal. Silakan pilih provinsi & kabupaten manual.');
     }
   };
 
@@ -60,7 +101,9 @@ export default function LocationPicker({ open, onClose }) {
           <Button variant="ghost" onClick={onClose}>
             Batal
           </Button>
-          <Button onClick={handleSave}>Simpan</Button>
+          <Button onClick={handleSave} disabled={!provinsi || !kabkota}>
+            Simpan
+          </Button>
         </div>
       }
     >
@@ -74,6 +117,12 @@ export default function LocationPicker({ open, onClose }) {
         >
           Deteksi lokasi saya otomatis
         </Button>
+
+        {(ctxError || fetchError) && !detecting && (
+          <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-xs text-red-600">
+            {fetchError || ctxError}
+          </div>
+        )}
 
         <div className="flex items-center gap-3 text-xs text-ink-pale">
           <div className="h-px flex-1 bg-line" />
@@ -89,6 +138,7 @@ export default function LocationPicker({ open, onClose }) {
             onChange={(e) => {
               setProvinsi(e.target.value);
               setKabkota('');
+              setKabkotaList([]);
             }}
             disabled={loadingProvinsi}
           >
@@ -109,13 +159,15 @@ export default function LocationPicker({ open, onClose }) {
             className="input"
             value={kabkota}
             onChange={(e) => setKabkota(e.target.value)}
-            disabled={!provinsi || loadingKabkota}
+            disabled={!provinsi || loadingKabkota || kabkotaList.length === 0}
           >
             <option value="">
               {!provinsi
                 ? '— Pilih provinsi dulu —'
                 : loadingKabkota
                 ? 'Memuat kabupaten/kota…'
+                : kabkotaList.length === 0
+                ? '— Tidak ada data —'
                 : '— Pilih kabupaten/kota —'}
             </option>
             {kabkotaList.map((k) => (
