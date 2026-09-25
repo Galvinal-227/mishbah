@@ -8,6 +8,7 @@ const Home = lazy(() => import('./pages/Home'));
 const Quran = lazy(() => import('./pages/Quran'));
 const QuranReader = lazy(() => import('./pages/QuranReader'));
 const Search = lazy(() => import('./pages/Search'));
+const Download = lazy(() => import('./pages/Download'));
 const Bookmarks = lazy(() => import('./pages/Bookmarks'));
 const LastRead = lazy(() => import('./pages/LastRead'));
 const Settings = lazy(() => import('./pages/Settings'));
@@ -33,6 +34,7 @@ export const router = createBrowserRouter([
       { path: 'quran', element: <Quran /> },
       { path: 'quran/:surah', element: <QuranReader /> },
       { path: 'search', element: <Search /> },
+      { path: 'download', element: <Download /> },
       {
         path: 'bookmarks',
         element: (
