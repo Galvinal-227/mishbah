@@ -1,13 +1,49 @@
 import { REVERSE_GEOCODE_BASE } from '../config/constants';
 
 /* =========================================================
-   Reverse geocoding via BigDataCloud (gratis, CORS-friendly)
+   Reverse geocoding — Nominatim (primary) + BigDataCloud (fallback)
    ========================================================= */
 export async function reverseGeocode(lat, lng) {
+  // Primary: Nominatim OpenStreetMap — data lebih lengkap (county, city, suburb)
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&accept-language=id`;
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json' },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      console.log('[Geocode] Nominatim:', data);
+      if (data?.address) {
+        return {
+          source: 'nominatim',
+          city: data.address.city,
+          town: data.address.town,
+          county: data.address.county,
+          municipality: data.address.municipality,
+          state: data.address.state,
+          suburb: data.address.suburb,
+          village: data.address.village,
+          raw: data,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[Geocode] Nominatim gagal, fallback BigDataCloud', err);
+  }
+
+  // Fallback: BigDataCloud
   const url = `${REVERSE_GEOCODE_BASE}?latitude=${lat}&longitude=${lng}&localityLanguage=id`;
   const res = await fetch(url);
   if (!res.ok) throw new Error('Gagal mendeteksi lokasi');
-  return res.json();
+  const data = await res.json();
+  console.log('[Geocode] BigDataCloud:', data);
+  return {
+    source: 'bigdatacloud',
+    city: data.city,
+    locality: data.locality,
+    principalSubdivision: data.principalSubdivision,
+    ...data,
+  };
 }
 
 /* =========================================================
@@ -35,19 +71,25 @@ export function getCurrentPosition(options = {}) {
 }
 
 /* =========================================================
-   Cocokkan hasil reverse-geocode ke daftar kabkota dari API
-   Dengan logging & matching 3-level
+   Normalisasi string (buang prefix Kota/Kab., tanda baca)
+   ========================================================= */
+function normalize(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/^(kota|kab\.?|kabupaten|kecamatan|kelurahan|desa)\s+/i, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[^a-z0-9\s]/g, '')
+    .trim();
+}
+
+/* =========================================================
+   Match kabupaten/kota — 4 level strategi
    ========================================================= */
 export function matchKabkota(kabkotaList, candidates = []) {
-  if (!kabkotaList?.length || !candidates?.length) return null;
-
-  const normalize = (s) =>
-    String(s)
-      .toLowerCase()
-      .replace(/^(kota|kab\.?|kabupaten)\s+/i, '')
-      .replace(/\s+/g, ' ')
-      .replace(/[^a-z0-9\s]/g, '')
-      .trim();
+  if (!kabkotaList?.length || !candidates?.length) {
+    console.log('[matchKabkota] Skip — list kosong atau candidates kosong');
+    return null;
+  }
 
   const cands = candidates
     .filter(Boolean)
@@ -56,7 +98,7 @@ export function matchKabkota(kabkotaList, candidates = []) {
 
   console.log('[matchKabkota] Candidates:', cands);
   console.log(
-    '[matchKabkota] Kabkota sample:',
+    '[matchKabkota] Kabkota list (5 first):',
     kabkotaList.slice(0, 5).map(normalize)
   );
 
@@ -64,12 +106,12 @@ export function matchKabkota(kabkotaList, candidates = []) {
   for (const cand of cands) {
     const hit = kabkotaList.find((k) => normalize(k) === cand);
     if (hit) {
-      console.log('[matchKabkota] Exact match:', cand, '→', hit);
+      console.log('[matchKabkota] Exact:', cand, '→', hit);
       return hit;
     }
   }
 
-  // 2) Contains match (either way)
+  // 2) Contains (either way)
   for (const cand of cands) {
     if (cand.length < 3) continue;
     const hit = kabkotaList.find((k) => {
@@ -77,20 +119,31 @@ export function matchKabkota(kabkotaList, candidates = []) {
       return nk.includes(cand) || cand.includes(nk);
     });
     if (hit) {
-      console.log('[matchKabkota] Contains match:', cand, '→', hit);
+      console.log('[matchKabkota] Contains:', cand, '→', hit);
       return hit;
     }
   }
 
-  // 3) Word-by-word match (kata ≥3 huruf)
+  // 3) Word-by-word (kata ≥4 huruf)
   for (const cand of cands) {
-    const words = cand.split(' ').filter((w) => w.length >= 3);
+    const words = cand.split(' ').filter((w) => w.length >= 4);
     for (const word of words) {
       const hit = kabkotaList.find((k) => normalize(k).includes(word));
       if (hit) {
-        console.log('[matchKabkota] Word match:', word, '→', hit);
+        console.log('[matchKabkota] Word:', word, '→', hit);
         return hit;
       }
+    }
+  }
+
+  // 4) Substring dari 5 huruf pertama (fuzzy)
+  for (const cand of cands) {
+    if (cand.length < 5) continue;
+    const prefix = cand.slice(0, 5);
+    const hit = kabkotaList.find((k) => normalize(k).startsWith(prefix));
+    if (hit) {
+      console.log('[matchKabkota] Prefix:', prefix, '→', hit);
+      return hit;
     }
   }
 
